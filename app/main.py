@@ -146,12 +146,8 @@ def search_knowledge(req: SearchRequest):
     if cache_key in SEARCH_CACHE:
         return SEARCH_CACHE[cache_key]
 
-    hf_token = os.getenv("HF_API_TOKEN")
-    if not hf_token:
-        raise HTTPException(status_code=500, detail="HF_API_TOKEN no configurado en el servidor")
-
     try:
-        q_vec = get_query_embedding(req.query, hf_token)
+        q_vec = get_query_embedding(req.query)
         raw_results = vector_store.search(q_vec, k=req.k, unidad=req.unidad, lab_number=req.labNumber)
         
         formatted_results = []
