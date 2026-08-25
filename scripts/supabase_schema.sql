@@ -15,28 +15,33 @@ CREATE TABLE IF NOT EXISTS public.chat_logs (
     unidad INT,
     sources JSONB DEFAULT '[]'::jsonb,
     response_time_ms INT,
-    status TEXT NOT NULL DEFAULT 'success', -- 'success', 'error', 'blocked_guardrails'
+    status TEXT NOT NULL DEFAULT 'success', -- 'success', 'success_cached', 'error', 'blocked_guardrails'
     error_message TEXT,
     model_used TEXT,
-    client_ip TEXT
+    client_ip TEXT,
+    rating INT, -- 1 para positivo (👍), -1 para negativo (👎)
+    feedback_comment TEXT
 );
 
--- 3. Crear índices optimizados para estadísticas y filtros rápidos
+-- 3. Si la tabla ya existía, agregar columnas adicionales de calificación
+ALTER TABLE public.chat_logs ADD COLUMN IF NOT EXISTS rating INT;
+ALTER TABLE public.chat_logs ADD COLUMN IF NOT EXISTS feedback_comment TEXT;
+
+-- 4. Crear índices optimizados para estadísticas y filtros rápidos
 CREATE INDEX IF NOT EXISTS idx_chat_logs_created_at ON public.chat_logs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_logs_unidad ON public.chat_logs (unidad);
 CREATE INDEX IF NOT EXISTS idx_chat_logs_status ON public.chat_logs (status);
+CREATE INDEX IF NOT EXISTS idx_chat_logs_rating ON public.chat_logs (rating);
 
--- 4. Habilitar RLS (Row Level Security) y permitir inserciones de la API anon/service_role
+-- 5. Habilitar RLS (Row Level Security) y permitir inserciones y actualizaciones desde la API
 ALTER TABLE public.chat_logs ENABLE ROW LEVEL SECURITY;
 
--- Política para permitir inserciones públicas/API
-CREATE POLICY "Permitir inserciones desde API" 
-ON public.chat_logs 
-FOR INSERT 
-WITH CHECK (true);
+-- Eliminamos políticas anteriores si existen para evitar duplicados
+DROP POLICY IF EXISTS "Permitir inserciones desde API" ON public.chat_logs;
+DROP POLICY IF EXISTS "Permitir lectura desde API" ON public.chat_logs;
+DROP POLICY IF EXISTS "Permitir actualizaciones desde API" ON public.chat_logs;
 
--- Política para permitir lectura desde la API
-CREATE POLICY "Permitir lectura desde API" 
-ON public.chat_logs 
-FOR SELECT 
-USING (true);
+-- Políticas permisivas para la API
+CREATE POLICY "Permitir inserciones desde API" ON public.chat_logs FOR INSERT WITH CHECK (true);
+CREATE POLICY "Permitir lectura desde API" ON public.chat_logs FOR SELECT USING (true);
+CREATE POLICY "Permitir actualizaciones desde API" ON public.chat_logs FOR UPDATE USING (true);

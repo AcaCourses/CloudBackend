@@ -7,6 +7,7 @@ import os
 import json
 import time
 import hashlib
+import uuid
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,8 @@ import requests
 from app.rag import vector_store, get_query_embedding, create_snippet
 from app.generation import generate_chat_stream
 from app.guardrails import validate_chat_query
-from app.db import save_chat_log_async, fetch_chat_stats, is_supabase_configured
+from app.db import save_chat_log_async, update_chat_rating_async, fetch_chat_stats, is_supabase_configured
+from app.cache import semantic_cache
 
 app = FastAPI(
     title="Cloud Computing Course Backend API",
@@ -122,6 +124,12 @@ class ChatRequest(BaseModel):
     unidad: Optional[int] = None
     access_key: Optional[str] = None
 
+class FeedbackRequest(BaseModel):
+    log_id: str
+    rating: int # 1 para positivo (👍), -1 para negativo (👎)
+    comment: Optional[str] = None
+    access_key: Optional[str] = None
+
 class ExamRequest(BaseModel):
     unidad: Optional[int] = None
     labNumber: Optional[int] = None
@@ -199,21 +207,53 @@ def search_knowledge(req: SearchRequest):
 
 @app.post("/chat")
 def chat_assistant(req: ChatRequest, raw_request: Request):
-    """Endpoint /chat: Guardrails + RAG + Fallback Dinámico con streaming SSE real."""
-    # 0. Verificar clave de acceso leída dinámicamente de variables de entorno
+    """Endpoint /chat: Guardrails + Caché Semántica + RAG + Fallback Dinámico con SSE."""
+    # 0. Verificar clave de acceso
     verify_access_key(raw_request, req.access_key)
 
     # 1. Validar y Sanitizar la consulta con Guardrails
     clean_query = validate_chat_query(req.query)
 
-    # 2. Recuperar contexto relevante mediante RAG
+    client_ip = raw_request.client.host if raw_request.client else "unknown"
+    start_time = time.time()
+    chat_log_id = str(uuid.uuid4())
+
+    # 2. Calcular embedding de la consulta
     q_vec = get_query_embedding(clean_query)
+
+    # 3. VERIFICAR CACHÉ SEMÁNTICA (Coincidencias previas >= 92% de similitud)
+    cached_hit = semantic_cache.search(q_vec, unidad=req.unidad)
+    if cached_hit:
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        print(f"⚡ [Semantic Cache HIT] (Similitud: {cached_hit['score']*100:.1f}%) para: '{clean_query[:30]}...'", flush=True)
+
+        cached_sources = cached_hit["sources"]
+        cached_response = cached_hit["response"]
+
+        def generate_cached_stream():
+            # Emitir respuesta almacenada instantáneamente por SSE
+            yield f"data: {json.dumps({'text': cached_response})}\n\n"
+            yield f"data: {json.dumps({'sources': cached_sources, 'log_id': chat_log_id, 'cached': True})}\n\n"
+
+            save_chat_log_async(
+                user_query=req.query,
+                assistant_response=cached_response,
+                unidad=req.unidad,
+                sources=cached_sources,
+                response_time_ms=elapsed_ms,
+                status="success_cached",
+                client_ip=client_ip,
+                log_id=chat_log_id
+            )
+
+        return StreamingResponse(generate_cached_stream(), media_type="text/event-stream")
+
+    # 4. CACHE MISS: Recuperar contexto relevante mediante RAG y consultar LLM
     top_chunks = vector_store.search(q_vec, k=3, unidad=req.unidad)
     
     context_str = "\n\n".join([f"--- CHUNK [{c['title']}] ---\n{c['text']}" for c in top_chunks])
     sources = [{"title": c["title"], "url": c["url"], "slug": c["slug"]} for c in top_chunks]
 
-    # 2. Prompt del sistema
     system_prompt = (
         "Eres el Asistente Tutor IA oficial del curso de Cloud Computing y Google Cloud Platform (GCP).\n"
         "Tu objetivo es dar respuestas visualmente impecables, estructuradas y didácticas para los alumnos.\n\n"
@@ -228,9 +268,6 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
     messages = [{"role": msg.role, "content": msg.content} for msg in (req.history or [])]
     messages.append({"role": "user", "content": req.query})
 
-    client_ip = raw_request.client.host if raw_request.client else "unknown"
-    start_time = time.time()
-
     def generate_stream():
         full_response_parts = []
         try:
@@ -238,12 +275,22 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 full_response_parts.append(text_chunk)
                 yield f"data: {json.dumps({'text': text_chunk})}\n\n"
 
-            yield f"data: {json.dumps({'sources': sources})}\n\n"
+            yield f"data: {json.dumps({'sources': sources, 'log_id': chat_log_id})}\n\n"
 
-            # Inserción en segundo plano al finalizar con éxito
             elapsed_ms = int((time.time() - start_time) * 1000)
             full_response = "".join(full_response_parts)
             print(f"📩 [Chat Stream Terminado] Lanzando guardado en Supabase (Latencia: {elapsed_ms}ms)...", flush=True)
+
+            # Almacenar en Caché Semántico para futuras preguntas
+            semantic_cache.add(
+                query_text=clean_query,
+                query_vector=q_vec,
+                response=full_response,
+                sources=sources,
+                unidad=req.unidad
+            )
+
+            # Guardar registro en Supabase en segundo plano
             save_chat_log_async(
                 user_query=req.query,
                 assistant_response=full_response,
@@ -251,11 +298,11 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 sources=sources,
                 response_time_ms=elapsed_ms,
                 status="success",
-                client_ip=client_ip
+                client_ip=client_ip,
+                log_id=chat_log_id
             )
 
         except Exception as err:
-            # Inserción en segundo plano en caso de error
             elapsed_ms = int((time.time() - start_time) * 1000)
             partial_response = "".join(full_response_parts) if full_response_parts else None
             print(f"⚠ [Chat Stream Error] Error en respuesta: {err}. Lanzando guardado de error...", flush=True)
@@ -267,11 +314,21 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 response_time_ms=elapsed_ms,
                 status="error",
                 error_message=str(err),
-                client_ip=client_ip
+                client_ip=client_ip,
+                log_id=chat_log_id
             )
             yield f"data: {json.dumps({'error': str(err)})}\n\n"
 
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
+
+@app.post("/chat/feedback")
+def post_chat_feedback(req: FeedbackRequest, raw_request: Request):
+    """Endpoint /chat/feedback: Permite al alumno calificar una respuesta (1 para 👍, -1 para 👎)."""
+    verify_access_key(raw_request, req.access_key)
+    if req.rating not in (1, -1):
+        raise HTTPException(status_code=400, detail="El rating debe ser 1 (positivo) o -1 (negativo).")
+    update_chat_rating_async(log_id=req.log_id, rating=req.rating, comment=req.comment)
+    return {"status": "ok", "message": "Feedback registrado exitosamente.", "log_id": req.log_id}
 
 @app.get("/chat/stats")
 def get_chat_stats(raw_request: Request, access_key: Optional[str] = None):
