@@ -39,7 +39,7 @@ def _save_chat_log_sync(
     """
     url, key = _get_supabase_config()
     if not url or not key:
-        print("ℹ [Supabase] Inserción omitida: SUPABASE_URL o SUPABASE_KEY no configuradas.")
+        print("ℹ [Supabase] Inserción omitida: SUPABASE_URL o SUPABASE_KEY no configuradas en env vars.", flush=True)
         return
 
     endpoint = f"{url}/rest/v1/chat_logs"
@@ -61,14 +61,22 @@ def _save_chat_log_sync(
         "client_ip": client_ip
     }
 
+    print(f"🚀 [Supabase BG Task] Enviando registro a {endpoint}...", flush=True)
+
     try:
         res = requests.post(endpoint, headers=headers, json=payload, timeout=10)
         if res.status_code in (200, 201):
-            print(f"✔ [Supabase] Chat log guardado exitosamente ({response_time_ms}ms).")
+            print(f"✔ [Supabase BG Task] Chat log guardado exitosamente en DB ({response_time_ms}ms).", flush=True)
         else:
-            print(f"⚠ [Supabase] Error al guardar chat log ({res.status_code}): {res.text}")
+            print(f"❌ [Supabase BG Task] Error al guardar chat log! HTTP {res.status_code}: {res.text}", flush=True)
     except Exception as e:
-        print(f"⚠ [Supabase] Excepción en segundo plano al guardar log: {e}")
+        print(f"❌ [Supabase BG Task] Excepción en segundo plano al intentar guardar en Supabase: {type(e).__name__}: {e}", flush=True)
+
+def _on_future_done(future):
+    try:
+        future.result()
+    except Exception as exc:
+        print(f"❌ [Supabase BG Task Thread Error] {exc}", flush=True)
 
 def save_chat_log_async(
     user_query: str,
@@ -84,7 +92,7 @@ def save_chat_log_async(
     Lanza el guardado en Supabase de forma totalmente asíncrona / en segundo plano.
     No bloquea la ejecución ni el streaming del usuario.
     """
-    _EXECUTOR.submit(
+    future = _EXECUTOR.submit(
         _save_chat_log_sync,
         user_query,
         assistant_response,
@@ -95,6 +103,7 @@ def save_chat_log_async(
         error_message,
         client_ip
     )
+    future.add_done_callback(_on_future_done)
 
 def fetch_chat_stats() -> Dict[str, Any]:
     """

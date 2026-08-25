@@ -244,6 +244,7 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
             # Inserción en segundo plano al finalizar con éxito
             elapsed_ms = int((time.time() - start_time) * 1000)
             full_response = "".join(full_response_parts)
+            print(f"📩 [Chat Stream Terminado] Lanzando guardado en Supabase (Latencia: {elapsed_ms}ms)...", flush=True)
             save_chat_log_async(
                 user_query=req.query,
                 assistant_response=full_response,
@@ -258,6 +259,7 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
             # Inserción en segundo plano en caso de error
             elapsed_ms = int((time.time() - start_time) * 1000)
             partial_response = "".join(full_response_parts) if full_response_parts else None
+            print(f"⚠ [Chat Stream Error] Error en respuesta: {err}. Lanzando guardado de error...", flush=True)
             save_chat_log_async(
                 user_query=req.query,
                 assistant_response=partial_response,
