@@ -74,13 +74,12 @@ SEARCH_CACHE = {}
 
 @app.on_event("startup")
 def startup_event():
-    gemini_key = os.getenv("GEMINI_API_KEY")
     groq_key = os.getenv("GROQ_API_KEY")
     
-    if not gemini_key and not groq_key:
-        print("⚠ WARNING: Ni GEMINI_API_KEY ni GROQ_API_KEY están configuradas. El endpoint /chat no podrá generar respuestas.")
+    if not groq_key:
+        print("⚠ WARNING: GROQ_API_KEY no está configurada. El endpoint /chat no podrá generar respuestas con Groq.")
     else:
-        print("✔ Llaves de API para generación configuradas (Gemini / Groq).")
+        print("✔ GROQ_API_KEY configurada exitosamente.")
 
     if is_supabase_configured():
         print("✔ Supabase configurado para persistencia y estadísticas en segundo plano.")
