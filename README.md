@@ -44,9 +44,17 @@ Cada vez que actualices o extraigas nuevo contenido desde el repositorio del fro
 
 ## 🌐 Deploy en Render
 
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Build Command**: 
+  ```bash
+  pip install -r requirements.txt && python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+  ```
+- **Start Command**: 
+  ```bash
+  uvicorn app.main:app --host 0.0.0.0 --port $PORT
+  ```
 - **Environment Variables**:
-  - `HF_API_TOKEN`
-  - `ANTHROPIC_API_KEY`
-  - `ALLOWED_ORIGIN` (`https://cloud-computing-beta-plum.vercel.app`)
+  - `GEMINI_API_KEY`
+  - `GROQ_API_KEY`
+  - `GEMINI_MODELS`
+  - `GROQ_MODELS`
+  - `ALLOWED_ORIGINS` (`https://cloud-computing-beta-plum.vercel.app,http://localhost:3000`)
