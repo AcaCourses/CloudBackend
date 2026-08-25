@@ -17,6 +17,7 @@ import requests
 from app.rag import vector_store, get_query_embedding, create_snippet
 from app.generation import generate_chat_stream
 from app.guardrails import validate_chat_query
+from app.db import save_chat_log_async, fetch_chat_stats, is_supabase_configured
 
 app = FastAPI(
     title="Cloud Computing Course Backend API",
@@ -80,6 +81,11 @@ def startup_event():
         print("⚠ WARNING: Ni GEMINI_API_KEY ni GROQ_API_KEY están configuradas. El endpoint /chat no podrá generar respuestas.")
     else:
         print("✔ Llaves de API para generación configuradas (Gemini / Groq).")
+
+    if is_supabase_configured():
+        print("✔ Supabase configurado para persistencia y estadísticas en segundo plano.")
+    else:
+        print("ℹ Supabase no configurado (SUPABASE_URL y SUPABASE_KEY no definidas). Los chats no se guardarán en DB.")
 
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     embeddings_file = os.path.join(BASE_DIR, "data", "knowledge-embeddings.json")
@@ -223,16 +229,54 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
     messages = [{"role": msg.role, "content": msg.content} for msg in (req.history or [])]
     messages.append({"role": "user", "content": req.query})
 
+    client_ip = raw_request.client.host if raw_request.client else "unknown"
+    start_time = time.time()
+
     def generate_stream():
+        full_response_parts = []
         try:
             for text_chunk in generate_chat_stream(system_prompt, messages):
+                full_response_parts.append(text_chunk)
                 yield f"data: {json.dumps({'text': text_chunk})}\n\n"
 
             yield f"data: {json.dumps({'sources': sources})}\n\n"
+
+            # Inserción en segundo plano al finalizar con éxito
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            full_response = "".join(full_response_parts)
+            save_chat_log_async(
+                user_query=req.query,
+                assistant_response=full_response,
+                unidad=req.unidad,
+                sources=sources,
+                response_time_ms=elapsed_ms,
+                status="success",
+                client_ip=client_ip
+            )
+
         except Exception as err:
+            # Inserción en segundo plano en caso de error
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            partial_response = "".join(full_response_parts) if full_response_parts else None
+            save_chat_log_async(
+                user_query=req.query,
+                assistant_response=partial_response,
+                unidad=req.unidad,
+                sources=sources,
+                response_time_ms=elapsed_ms,
+                status="error",
+                error_message=str(err),
+                client_ip=client_ip
+            )
             yield f"data: {json.dumps({'error': str(err)})}\n\n"
 
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
+
+@app.get("/chat/stats")
+def get_chat_stats(raw_request: Request, access_key: Optional[str] = None):
+    """Endpoint /chat/stats: Devuelve estadísticas agregadas de la tabla chat_logs en Supabase."""
+    verify_access_key(raw_request, access_key)
+    return fetch_chat_stats()
 
 @app.post("/exam")
 def generate_exam(req: ExamRequest, raw_request: Request):
