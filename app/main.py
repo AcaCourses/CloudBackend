@@ -127,12 +127,14 @@ class ExamRequest(BaseModel):
 def verify_access_key(request: Request, body_key: Optional[str] = None):
     """
     Verifica la clave de acceso leída de las variables de entorno (CHAT_ACCESS_KEY).
-    No contiene ninguna clave hardcodeada. Lee de los headers ('X-Access-Key') o del body ('access_key').
+    Es OBLIGATORIA: Si no hay clave enviada o si no coincide con la configurada en Render, bloquea con 401.
     """
     expected_key = os.getenv("CHAT_ACCESS_KEY")
     if not expected_key:
-        # Si no se ha configurado la variable de entorno CHAT_ACCESS_KEY en el servidor, se permite el paso.
-        return
+        raise HTTPException(
+            status_code=500,
+            detail="Error de configuración: CHAT_ACCESS_KEY no está configurada en el servidor."
+        )
 
     header_key = request.headers.get("X-Access-Key")
     provided_key = header_key or body_key
