@@ -185,10 +185,14 @@ def chat_assistant(req: ChatRequest):
 
     # 2. Prompt del sistema
     system_prompt = (
-        "Eres un Asistente Tutor experto en la materia de Cloud Computing y Google Cloud Platform (GCP).\n"
-        "Responde de forma clara, directa, didáctica y basada estrictamente en el siguiente contexto del curso:\n\n"
-        f"{context_str}\n\n"
-        "Si la respuesta no está en el contexto, indícalo brevemente y responde con tus conocimientos generales."
+        "Eres el Asistente Tutor IA oficial del curso de Cloud Computing y Google Cloud Platform (GCP).\n"
+        "Tu objetivo es dar respuestas visualmente impecables, estructuradas y didácticas para los alumnos.\n\n"
+        "REGLAS DE FORMATO OBLIGATORIAS:\n"
+        "1. Estructura la respuesta usando Markdown elegante (Títulos ##, negritas, listas con viñetas y tablas comparativas cuando aplique).\n"
+        "2. Mantén un tono profesional, claro y directo.\n"
+        "3. Basado en el contexto del curso proporcionado a continuación, incluye explicaciones detalladas con ventajas, desventajas o ejemplos prácticos si la pregunta lo amerita.\n"
+        "4. Al final de tu respuesta, bajo la sección '### 📚 Fuentes del curso', incluye siempre las referencias con enlace explícito en Markdown [Título](URL).\n\n"
+        f"CONTEXTO DEL CURSO:\n{context_str}\n"
     )
 
     messages = [{"role": msg.role, "content": msg.content} for msg in (req.history or [])]
