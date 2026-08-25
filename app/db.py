@@ -151,13 +151,13 @@ def update_chat_rating_async(log_id: str, rating: int, comment: Optional[str] = 
 
 def fetch_chat_stats() -> Dict[str, Any]:
     """
-    Obtiene estadísticas básicas desde la tabla chat_logs en Supabase.
+    Obtiene estadísticas completas y analíticas docentes desde la tabla chat_logs en Supabase.
     """
     url, key = _get_supabase_config()
     if not url or not key:
         return {"configured": False, "message": "Supabase no está configurado."}
 
-    endpoint = f"{url}/rest/v1/chat_logs?select=id,status,unidad,response_time_ms,rating,created_at&order=created_at.desc&limit=500"
+    endpoint = f"{url}/rest/v1/chat_logs?select=id,user_query,assistant_response,unidad,sources,response_time_ms,status,rating,feedback_comment,created_at&order=created_at.desc&limit=500"
     headers = {
         "apikey": key,
         "Authorization": f"Bearer {key}"
@@ -175,21 +175,55 @@ def fetch_chat_stats() -> Dict[str, Any]:
             
             positive_ratings = sum(1 for log in logs if log.get("rating") == 1)
             negative_ratings = sum(1 for log in logs if log.get("rating") == -1)
+            total_rated = positive_ratings + negative_ratings
+            satisfaction_rate = round((positive_ratings / total_rated * 100), 1) if total_rated > 0 else 100.0
+
+            cache_hit_ratio = round((cached_count / success_count * 100), 1) if success_count > 0 else 0.0
 
             times = [log["response_time_ms"] for log in logs if log.get("response_time_ms")]
             avg_time = sum(times) / len(times) if times else 0
+
+            # Desglose de preguntas por Unidad Temática
+            unit_counts = {}
+            for log in logs:
+                u = log.get("unidad")
+                u_key = f"Unidad {u}" if u is not None else "General / Duda Global"
+                unit_counts[u_key] = unit_counts.get(u_key, 0) + 1
+
+            # Formatear últimos 50 registros para la tabla interactiva
+            recent_logs = []
+            for log in logs[:50]:
+                snippet = log.get("assistant_response") or ""
+                if len(snippet) > 160:
+                    snippet = snippet[:160] + "..."
+
+                recent_logs.append({
+                    "id": log.get("id"),
+                    "user_query": log.get("user_query"),
+                    "assistant_snippet": snippet,
+                    "unidad": log.get("unidad"),
+                    "sources_count": len(log.get("sources") or []),
+                    "response_time_ms": log.get("response_time_ms"),
+                    "status": log.get("status"),
+                    "rating": log.get("rating"),
+                    "feedback_comment": log.get("feedback_comment"),
+                    "created_at": log.get("created_at")
+                })
 
             return {
                 "configured": True,
                 "total_queries_sample": total_chats,
                 "success_count": success_count,
                 "cached_hits_count": cached_count,
+                "cache_hit_ratio_percent": cache_hit_ratio,
                 "error_count": error_count,
                 "blocked_guardrails_count": blocked_count,
                 "positive_ratings": positive_ratings,
                 "negative_ratings": negative_ratings,
+                "satisfaction_rate_percent": satisfaction_rate,
                 "avg_response_time_ms": round(avg_time, 2),
-                "recent_logs_count": len(logs)
+                "unit_breakdown": unit_counts,
+                "recent_logs": recent_logs
             }
         else:
             return {"configured": True, "error": f"HTTP {res.status_code}: {res.text}"}
