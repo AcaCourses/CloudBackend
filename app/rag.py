@@ -13,14 +13,19 @@ import numpy as np
 
 # Modelo multilingüe optimizado de 384 dimensiones para FastEmbed (ONNX)
 EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+LOCAL_EMBEDDING_MODEL = None
 
-try:
-    from fastembed import TextEmbedding
-    LOCAL_EMBEDDING_MODEL = TextEmbedding(EMBEDDING_MODEL_NAME)
-    print(f"✔ Modelo local de embeddings ONNX ({EMBEDDING_MODEL_NAME}) cargado en CPU.")
-except Exception as e:
-    LOCAL_EMBEDDING_MODEL = None
-    print(f"⚠ FastEmbed local no disponible ({e}). Se usará Hugging Face API como fallback.")
+def get_local_model():
+    """Lazy load del modelo en la primera consulta para no consumir RAM en el startup de uvicorn."""
+    global LOCAL_EMBEDDING_MODEL
+    if LOCAL_EMBEDDING_MODEL is None:
+        try:
+            from fastembed import TextEmbedding
+            LOCAL_EMBEDDING_MODEL = TextEmbedding(EMBEDDING_MODEL_NAME)
+            print(f"✔ Modelo local ONNX ({EMBEDDING_MODEL_NAME}) inicializado en RAM.")
+        except Exception as e:
+            print(f"⚠ No se pudo cargar FastEmbed ({e}). Se usará HF API como fallback.")
+    return LOCAL_EMBEDDING_MODEL
 
 HF_API_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{EMBEDDING_MODEL_NAME}"
 
@@ -94,10 +99,11 @@ def get_query_embedding(query: str, hf_token: str = None) -> list[float]:
     Genera el embedding de la consulta.
     Intenta primero hacerlo 100% local en CPU (ONNX int8). Si falla, hace fallback a la API de HF.
     """
-    # 1. Intentar modelo local (FastEmbed ONNX)
-    if LOCAL_EMBEDDING_MODEL is not None:
+    # 1. Intentar modelo local con Lazy Loading
+    local_model = get_local_model()
+    if local_model is not None:
         try:
-            embeddings_generator = LOCAL_EMBEDDING_MODEL.embed([query])
+            embeddings_generator = local_model.embed([query])
             vector = list(next(embeddings_generator))
             return vector
         except Exception as err:
