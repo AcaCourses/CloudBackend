@@ -44,10 +44,7 @@ Cada vez que actualices o extraigas nuevo contenido desde el repositorio del fro
 
 ## 🌐 Deploy en Render
 
-- **Build Command**: 
-  ```bash
-  pip install -r requirements.txt && python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
-  ```
+- **Build Command**: `pip install -r requirements.txt`
 - **Start Command**: 
   ```bash
   uvicorn app.main:app --host 0.0.0.0 --port $PORT

@@ -1,8 +1,7 @@
 """
 app/rag.py
-Módulo de recuperación de información semántica (RAG) basado en Cosine Similarity en RAM.
-Calcula los embeddings localmente en CPU con ONNX/FastEmbed (rápido, ~100MB RAM)
-sin depender de llamadas HTTP externas ni cuotas para la inferencia en tiempo real.
+Módulo RAG ultra-liviano usando la API remota de Hugging Face (sin librerías pesadas en RAM).
+Consumo en RAM de Python: < 40 MB. Ideal para el Tier Gratis de Render (512 MB).
 """
 
 import os
@@ -11,23 +10,9 @@ import time
 import requests
 import numpy as np
 
-# Modelo multilingüe optimizado de 384 dimensiones para FastEmbed (ONNX)
-EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-LOCAL_EMBEDDING_MODEL = None
-
-def get_local_model():
-    """Lazy load del modelo en la primera consulta para no consumir RAM en el startup de uvicorn."""
-    global LOCAL_EMBEDDING_MODEL
-    if LOCAL_EMBEDDING_MODEL is None:
-        try:
-            from fastembed import TextEmbedding
-            LOCAL_EMBEDDING_MODEL = TextEmbedding(EMBEDDING_MODEL_NAME)
-            print(f"✔ Modelo local ONNX ({EMBEDDING_MODEL_NAME}) inicializado en RAM.")
-        except Exception as e:
-            print(f"⚠ No se pudo cargar FastEmbed ({e}). Se usará HF API como fallback.")
-    return LOCAL_EMBEDDING_MODEL
-
-HF_API_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{EMBEDDING_MODEL_NAME}"
+# Nuevo endpoint router oficial de Hugging Face
+HF_MODEL_ID = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+HF_ROUTER_URL = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL_ID}/pipeline/feature-extraction"
 
 class VectorStore:
     def __init__(self):
@@ -94,43 +79,39 @@ class VectorStore:
 # Instancia singleton global
 vector_store = VectorStore()
 
-def get_query_embedding(query: str, hf_token: str = None) -> list[float]:
+def get_query_embedding(query: str, retries: int = 3) -> list[float]:
     """
-    Genera el embedding de la consulta.
-    Intenta primero hacerlo 100% local en CPU (ONNX int8). Si falla, hace fallback a la API de HF.
+    Genera el embedding de la consulta usando la API remota de Hugging Face (Endpoint Router).
+    Incluye backoff para reintentar si el modelo está despertando (503).
     """
-    # 1. Intentar modelo local con Lazy Loading
-    local_model = get_local_model()
-    if local_model is not None:
-        try:
-            embeddings_generator = local_model.embed([query])
-            vector = list(next(embeddings_generator))
-            return vector
-        except Exception as err:
-            print(f"⚠ Fallo al calcular embedding local ({err}). Reintentando con HF API...")
+    hf_token = os.getenv("HF_API_TOKEN", "")
+    headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
+    payload = {"inputs": query, "options": {"wait_for_model": True}}
 
-    # 2. Fallback a HF API
-    if not hf_token:
-        hf_token = os.getenv("HF_API_TOKEN", "")
-
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    payload = {"inputs": [query], "options": {"wait_for_model": True}}
-    
-    for attempt in range(3):
+    for attempt in range(retries):
         try:
-            res = requests.post(HF_API_URL, headers=headers, json=payload, timeout=15)
+            res = requests.post(HF_ROUTER_URL, headers=headers, json=payload, timeout=25)
             if res.status_code == 200:
                 data = res.json()
-                vector = data[0]
-                if isinstance(vector, list) and len(vector) > 0 and isinstance(vector[0], list):
-                    vector = vector[0]
-                return vector
+                # Si viene una matriz por token, aplicar mean pooling
+                if isinstance(data, list) and len(data) > 0:
+                    if isinstance(data[0], list) and len(data[0]) > 0 and isinstance(data[0][0], list):
+                        tokens = data[0]
+                        dim = len(tokens[0])
+                        return [sum(t[i] for t in tokens) / len(tokens) for i in range(dim)]
+                    return data[0] if isinstance(data[0], list) else data
+                return data
             elif res.status_code == 503:
-                time.sleep(3)
-        except Exception:
-            time.sleep(2)
+                print(f"[RAG HF] Modelo en HF despertando (503)... esperando {5 * (attempt + 1)}s")
+                time.sleep(5 * (attempt + 1))
+            else:
+                raise Exception(f"HF Router Error ({res.status_code}): {res.text}")
+        except requests.RequestException as e:
+            if attempt == retries - 1:
+                raise Exception(f"Error al conectar con la API de Hugging Face: {e}")
+            time.sleep(3)
 
-    raise Exception("No se pudo obtener el embedding de la consulta (Local ni HF API).")
+    raise Exception("No se pudo obtener el embedding tras varios reintentos en Hugging Face.")
 
 def create_snippet(text: str, query: str, max_chars: int = 160) -> str:
     """Genera un snippet recortado alrededor de la primera coincidencia o inicio del texto."""
@@ -140,4 +121,3 @@ def create_snippet(text: str, query: str, max_chars: int = 160) -> str:
     if len(text_clean) <= max_chars:
         return text_clean
     return text_clean[:max_chars] + "..."
-
