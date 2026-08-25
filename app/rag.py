@@ -79,39 +79,107 @@ class VectorStore:
 # Instancia singleton global
 vector_store = VectorStore()
 
-def get_query_embedding(query: str, retries: int = 3) -> list[float]:
-    """
-    Genera el embedding de la consulta usando la API remota de Hugging Face (Endpoint Router).
-    Incluye backoff para reintentar si el modelo está despertando (503).
-    """
+def get_cohere_embedding(query: str) -> list[float]:
+    """Fallback 1: Cohere API (embed-multilingual-v3.0)."""
+    cohere_key = os.getenv("COHERE_API_KEY")
+    if not cohere_key:
+        raise Exception("COHERE_API_KEY no configurada")
+
+    url = "https://api.cohere.com/v1/embed"
+    headers = {
+        "Authorization": f"Bearer {cohere_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "texts": [query],
+        "model": "embed-multilingual-v3.0",
+        "input_type": "search_query"
+    }
+    res = requests.post(url, headers=headers, json=payload, timeout=15)
+    if res.status_code == 200:
+        data = res.json()
+        embeddings = data.get("embeddings", {})
+        if isinstance(embeddings, dict): # v3 API retorna dict con tipos (float, int8, etc)
+            float_embs = embeddings.get("float", [])
+            if float_embs:
+                return float_embs[0]
+        elif isinstance(embeddings, list) and len(embeddings) > 0:
+            return embeddings[0]
+    raise Exception(f"Cohere API Error ({res.status_code}): {res.text}")
+
+def get_jina_embedding(query: str) -> list[float]:
+    """Fallback 2: Jina AI Embedding API (jina-embeddings-v3)."""
+    jina_key = os.getenv("JINA_API_KEY")
+    if not jina_key:
+        raise Exception("JINA_API_KEY no configurada")
+
+    url = "https://api.jina.ai/v1/embeddings"
+    headers = {
+        "Authorization": f"Bearer {jina_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "jina-embeddings-v3",
+        "task": "text-matching",
+        "dimensions": 384, # Reducir dimensión a 384 para compatibilidad
+        "input": [query]
+    }
+    res = requests.post(url, headers=headers, json=payload, timeout=15)
+    if res.status_code == 200:
+        data = res.json()
+        data_list = data.get("data", [])
+        if data_list and "embedding" in data_list[0]:
+            return data_list[0]["embedding"]
+    raise Exception(f"Jina API Error ({res.status_code}): {res.text}")
+
+def get_hf_embedding(query: str, retries: int = 2) -> list[float]:
+    """HF Router API."""
     hf_token = os.getenv("HF_API_TOKEN", "")
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     payload = {"inputs": query, "options": {"wait_for_model": True}}
 
     for attempt in range(retries):
-        try:
-            res = requests.post(HF_ROUTER_URL, headers=headers, json=payload, timeout=25)
-            if res.status_code == 200:
-                data = res.json()
-                # Si viene una matriz por token, aplicar mean pooling
-                if isinstance(data, list) and len(data) > 0:
-                    if isinstance(data[0], list) and len(data[0]) > 0 and isinstance(data[0][0], list):
-                        tokens = data[0]
-                        dim = len(tokens[0])
-                        return [sum(t[i] for t in tokens) / len(tokens) for i in range(dim)]
-                    return data[0] if isinstance(data[0], list) else data
-                return data
-            elif res.status_code == 503:
-                print(f"[RAG HF] Modelo en HF despertando (503)... esperando {5 * (attempt + 1)}s")
-                time.sleep(5 * (attempt + 1))
-            else:
-                raise Exception(f"HF Router Error ({res.status_code}): {res.text}")
-        except requests.RequestException as e:
-            if attempt == retries - 1:
-                raise Exception(f"Error al conectar con la API de Hugging Face: {e}")
+        res = requests.post(HF_ROUTER_URL, headers=headers, json=payload, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) > 0:
+                if isinstance(data[0], list) and len(data[0]) > 0 and isinstance(data[0][0], list):
+                    tokens = data[0]
+                    dim = len(tokens[0])
+                    return [sum(t[i] for t in tokens) / len(tokens) for i in range(dim)]
+                return data[0] if isinstance(data[0], list) else data
+            return data
+        elif res.status_code == 503:
             time.sleep(3)
 
-    raise Exception("No se pudo obtener el embedding tras varios reintentos en Hugging Face.")
+    raise Exception("HF Router API saturado o no disponible.")
+
+def get_query_embedding(query: str) -> list[float]:
+    """
+    Cadena de Fallback para Embeddings:
+      1. Hugging Face Router API (paraphrase-multilingual-MiniLM-L12-v2)
+      2. Cohere API (embed-multilingual-v3.0)
+      3. Jina AI API (jina-embeddings-v3)
+    """
+    # 1. Intentar Hugging Face Router API
+    try:
+        return get_hf_embedding(query)
+    except Exception as e:
+        print(f"⚠ [Embedding Fallback] HF Router API falló: {e}. Probando Cohere...")
+
+    # 2. Intentar Cohere API (embed-multilingual-v3.0)
+    try:
+        return get_cohere_embedding(query)
+    except Exception as e:
+        print(f"⚠ [Embedding Fallback] Cohere API falló: {e}. Probando Jina AI...")
+
+    # 3. Intentar Jina AI API (jina-embeddings-v3)
+    try:
+        return get_jina_embedding(query)
+    except Exception as e:
+        print(f"⚠ [Embedding Fallback] Jina AI API falló: {e}.")
+
+    raise Exception("Ningún proveedor de embeddings (HF, Cohere ni Jina) estuvo disponible.")
 
 def create_snippet(text: str, query: str, max_chars: int = 160) -> str:
     """Genera un snippet recortado alrededor de la primera coincidencia o inicio del texto."""
