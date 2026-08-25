@@ -21,26 +21,26 @@ EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12
 
 def main():
     if not os.path.exists(CHUNKS_FILE):
-        print(f"❌ Error: No se encontró {CHUNKS_FILE}. Corre primero el script de extracción en el frontend.")
+        print(f"Error: No se encontro {CHUNKS_FILE}. Corre primero el script de extraccion en el frontend.")
         return
 
     with open(CHUNKS_FILE, "r", encoding="utf-8") as f:
         chunks = json.load(f)
 
-    print(f"🔄 Leídos {len(chunks)} chunks de conocimiento.")
-    print(f"🤖 Cargando modelo local FastEmbed ({EMBEDDING_MODEL_NAME})...")
+    print(f"[RAG] Leidos {len(chunks)} chunks de conocimiento.")
+    print(f"[RAG] Cargando modelo local FastEmbed ({EMBEDDING_MODEL_NAME})...")
 
     try:
         from fastembed import TextEmbedding
         model = TextEmbedding(EMBEDDING_MODEL_NAME)
     except Exception as e:
-        print(f"❌ Error al cargar FastEmbed: {e}")
-        print("Asegúrate de haber instalado 'fastembed' con: pip install fastembed")
+        print(f"Error al cargar FastEmbed: {e}")
+        print("Asegurate de haber instalado 'fastembed' con: pip install fastembed")
         return
 
     texts = [f"{c['title']}\n{c['text']}" for c in chunks]
     
-    print(f"⚡ Generando embeddings locales en CPU...")
+    print(f"[RAG] Generando embeddings locales en CPU...")
     start_time = time.time()
     
     embeddings_generator = model.embed(texts)
@@ -61,12 +61,12 @@ def main():
         })
 
     elapsed = time.time() - start_time
-    print(f"✔ Generación completada en {elapsed:.2f} segundos.")
+    print(f"[RAG] Generacion completada en {elapsed:.2f} segundos.")
 
     with open(EMBEDDINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(embedded_chunks, f, ensure_ascii=False, indent=2)
 
-    print(f"✔ ¡Éxito! Generados {len(embedded_chunks)} embeddings multilingües -> {EMBEDDINGS_FILE}")
+    print(f"[RAG] Exito: Generados {len(embedded_chunks)} embeddings multilingues -> {EMBEDDINGS_FILE}")
 
 if __name__ == "__main__":
     main()
