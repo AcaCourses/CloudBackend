@@ -16,6 +16,7 @@ import requests
 
 from app.rag import vector_store, get_query_embedding, create_snippet
 from app.generation import generate_chat_stream
+from app.guardrails import validate_chat_query
 
 app = FastAPI(
     title="Cloud Computing Course Backend API",
@@ -138,16 +139,15 @@ def health_check():
 
 @app.post("/search", response_model=SearchResponse)
 def search_knowledge(req: SearchRequest):
-    """Endpoint /search: Recibe consulta, genera embedding HF y devuelve Top-K con snippet."""
-    if not req.query.strip():
-        return SearchResponse(results=[])
+    """Endpoint /search: Recibe consulta, aplica Guardrails y devuelve Top-K con snippet."""
+    clean_query = validate_chat_query(req.query)
 
-    cache_key = hashlib.md5(f"{req.query.strip().lower()}_{req.k}_{req.unidad}_{req.labNumber}".encode()).hexdigest()
+    cache_key = hashlib.md5(f"{clean_query.lower()}_{req.k}_{req.unidad}_{req.labNumber}".encode()).hexdigest()
     if cache_key in SEARCH_CACHE:
         return SEARCH_CACHE[cache_key]
 
     try:
-        q_vec = get_query_embedding(req.query)
+        q_vec = get_query_embedding(clean_query)
         raw_results = vector_store.search(q_vec, k=req.k, unidad=req.unidad, lab_number=req.labNumber)
         
         formatted_results = []
@@ -158,7 +158,7 @@ def search_knowledge(req: SearchRequest):
                 unidad=item.get("unidad"),
                 labNumber=item.get("labNumber"),
                 slug=item["slug"],
-                snippet=create_snippet(item["text"], req.query),
+                snippet=create_snippet(item["text"], clean_query),
                 url=item["url"],
                 score=item["score"]
             ))
@@ -171,9 +171,12 @@ def search_knowledge(req: SearchRequest):
 
 @app.post("/chat")
 def chat_assistant(req: ChatRequest):
-    """Endpoint /chat: RAG + Fallback Dinámico (Gemini -> Groq) con streaming SSE real."""
-    # 1. Recuperar contexto relevante mediante RAG
-    q_vec = get_query_embedding(req.query)
+    """Endpoint /chat: Guardrails + RAG + Fallback Dinámico con streaming SSE real."""
+    # 1. Validar y Sanitizar la consulta con Guardrails
+    clean_query = validate_chat_query(req.query)
+
+    # 2. Recuperar contexto relevante mediante RAG
+    q_vec = get_query_embedding(clean_query)
     top_chunks = vector_store.search(q_vec, k=3, unidad=req.unidad)
     
     context_str = "\n\n".join([f"--- CHUNK [{c['title']}] ---\n{c['text']}" for c in top_chunks])
