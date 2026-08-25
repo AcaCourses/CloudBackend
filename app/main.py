@@ -115,12 +115,33 @@ class ChatRequest(BaseModel):
     query: str
     history: Optional[List[ChatMessage]] = []
     unidad: Optional[int] = None
+    access_key: Optional[str] = None
 
 class ExamRequest(BaseModel):
     unidad: Optional[int] = None
     labNumber: Optional[int] = None
     tipo: Optional[str] = "all" # "quiz" | "scenario" | "matching" | "classify" | "all"
     cantidad: Optional[int] = 5
+    access_key: Optional[str] = None
+
+def verify_access_key(request: Request, body_key: Optional[str] = None):
+    """
+    Verifica la clave de acceso leída de las variables de entorno (CHAT_ACCESS_KEY).
+    No contiene ninguna clave hardcodeada. Lee de los headers ('X-Access-Key') o del body ('access_key').
+    """
+    expected_key = os.getenv("CHAT_ACCESS_KEY")
+    if not expected_key:
+        # Si no se ha configurado la variable de entorno CHAT_ACCESS_KEY en el servidor, se permite el paso.
+        return
+
+    header_key = request.headers.get("X-Access-Key")
+    provided_key = header_key or body_key
+
+    if not provided_key or provided_key.strip() != expected_key.strip():
+        raise HTTPException(
+            status_code=401,
+            detail="Clave de acceso requerida o incorrecta. Ingrese la clave válida del curso."
+        )
 
 # ─────────────────────────────────────────────────────────────
 # ENDPOINTS
@@ -170,8 +191,11 @@ def search_knowledge(req: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
-def chat_assistant(req: ChatRequest):
+def chat_assistant(req: ChatRequest, raw_request: Request):
     """Endpoint /chat: Guardrails + RAG + Fallback Dinámico con streaming SSE real."""
+    # 0. Verificar clave de acceso leída dinámicamente de variables de entorno
+    verify_access_key(raw_request, req.access_key)
+
     # 1. Validar y Sanitizar la consulta con Guardrails
     clean_query = validate_chat_query(req.query)
 
@@ -209,11 +233,13 @@ def chat_assistant(req: ChatRequest):
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
 
 @app.post("/exam")
-def generate_exam(req: ExamRequest):
+def generate_exam(req: ExamRequest, raw_request: Request):
     """
     Endpoint /exam: Obtiene ejemplos de estilo (style-examples.json) estructurados
     matching los componentes del frontend (Quiz, Scenario, Matching, Classify).
     """
+    # Verificar clave de acceso
+    verify_access_key(raw_request, req.access_key)
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     style_file = os.path.join(BASE_DIR, "data", "style-examples.json")
 
