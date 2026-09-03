@@ -4,35 +4,37 @@ Módulo de persistencia y estadísticas en Supabase.
 Maneja el guardado y actualización asíncrona de preguntas, respuestas y calificaciones (rating 👍/👎) en el chat.
 """
 
-import os
-import json
-import time
 import concurrent.futures
-from typing import Dict, Any, Optional, List
+import os
+from typing import Any
+
 import requests
 
 # Executor global de hilos para procesos en segundo plano (non-blocking)
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+
 
 def _get_supabase_config():
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
     key = os.getenv("SUPABASE_KEY", "")
     return url, key
 
+
 def is_supabase_configured() -> bool:
     url, key = _get_supabase_config()
     return bool(url and key)
 
+
 def _save_chat_log_sync(
     user_query: str,
-    assistant_response: Optional[str],
-    unidad: Optional[int],
-    sources: Optional[List[Dict[str, Any]]],
+    assistant_response: str | None,
+    unidad: int | None,
+    sources: list[dict[str, Any]] | None,
     response_time_ms: int,
     status: str,
-    error_message: Optional[str],
-    client_ip: Optional[str],
-    log_id: Optional[str] = None
+    error_message: str | None,
+    client_ip: str | None,
+    log_id: str | None = None,
 ):
     """
     Guarda el registro en Supabase mediante la API REST de PostgREST / Supabase SDK.
@@ -40,7 +42,10 @@ def _save_chat_log_sync(
     """
     url, key = _get_supabase_config()
     if not url or not key:
-        print("ℹ [Supabase] Inserción omitida: SUPABASE_URL o SUPABASE_KEY no configuradas en env vars.", flush=True)
+        print(
+            "ℹ [Supabase] Inserción omitida: SUPABASE_URL o SUPABASE_KEY no configuradas en env vars.",
+            flush=True,
+        )
         return
 
     endpoint = f"{url}/rest/v1/chat_logs"
@@ -48,7 +53,7 @@ def _save_chat_log_sync(
         "apikey": key,
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal"
+        "Prefer": "return=minimal",
     }
 
     payload = {
@@ -59,7 +64,7 @@ def _save_chat_log_sync(
         "response_time_ms": response_time_ms,
         "status": status,
         "error_message": error_message,
-        "client_ip": client_ip
+        "client_ip": client_ip,
     }
 
     if log_id:
@@ -70,19 +75,32 @@ def _save_chat_log_sync(
     try:
         res = requests.post(endpoint, headers=headers, json=payload, timeout=10)
         if res.status_code in (200, 201):
-            print(f"✔ [Supabase BG Task] Chat log guardado exitosamente en DB ({response_time_ms}ms).", flush=True)
+            print(
+                f"✔ [Supabase BG Task] Chat log guardado exitosamente en DB ({response_time_ms}ms).",
+                flush=True,
+            )
         else:
-            print(f"❌ [Supabase BG Task] Error al guardar chat log! HTTP {res.status_code}: {res.text}", flush=True)
+            print(
+                f"❌ [Supabase BG Task] Error al guardar chat log! HTTP {res.status_code}: {res.text}",
+                flush=True,
+            )
     except Exception as e:
-        print(f"❌ [Supabase BG Task] Excepción en segundo plano al intentar guardar en Supabase: {type(e).__name__}: {e}", flush=True)
+        print(
+            f"❌ [Supabase BG Task] Excepción en segundo plano al intentar guardar en Supabase: {type(e).__name__}: {e}",
+            flush=True,
+        )
 
-def _update_chat_rating_sync(log_id: str, rating: int, comment: Optional[str] = None):
+
+def _update_chat_rating_sync(log_id: str, rating: int, comment: str | None = None):
     """
     Actualiza la calificación (rating 👍/👎) y comentario de un mensaje existente en Supabase.
     """
     url, key = _get_supabase_config()
     if not url or not key:
-        print("ℹ [Supabase] Actualización omitida: SUPABASE_URL o SUPABASE_KEY no configuradas.", flush=True)
+        print(
+            "ℹ [Supabase] Actualización omitida: SUPABASE_URL o SUPABASE_KEY no configuradas.",
+            flush=True,
+        )
         return
 
     endpoint = f"{url}/rest/v1/chat_logs?id=eq.{log_id}"
@@ -90,23 +108,36 @@ def _update_chat_rating_sync(log_id: str, rating: int, comment: Optional[str] = 
         "apikey": key,
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal"
+        "Prefer": "return=minimal",
     }
 
     payload = {"rating": rating}
     if comment:
         payload["feedback_comment"] = comment
 
-    print(f"👍 [Supabase Rating BG Task] Actualizando rating ({rating}) para log {log_id}...", flush=True)
+    print(
+        f"👍 [Supabase Rating BG Task] Actualizando rating ({rating}) para log {log_id}...",
+        flush=True,
+    )
 
     try:
         res = requests.patch(endpoint, headers=headers, json=payload, timeout=10)
         if res.status_code in (200, 204):
-            print(f"✔ [Supabase Rating BG Task] Rating actualizado con éxito para ID {log_id}.", flush=True)
+            print(
+                f"✔ [Supabase Rating BG Task] Rating actualizado con éxito para ID {log_id}.",
+                flush=True,
+            )
         else:
-            print(f"❌ [Supabase Rating BG Task] Error al actualizar rating! HTTP {res.status_code}: {res.text}", flush=True)
+            print(
+                f"❌ [Supabase Rating BG Task] Error al actualizar rating! HTTP {res.status_code}: {res.text}",
+                flush=True,
+            )
     except Exception as e:
-        print(f"❌ [Supabase Rating BG Task] Excepción al actualizar rating: {type(e).__name__}: {e}", flush=True)
+        print(
+            f"❌ [Supabase Rating BG Task] Excepción al actualizar rating: {type(e).__name__}: {e}",
+            flush=True,
+        )
+
 
 def _on_future_done(future):
     try:
@@ -114,16 +145,17 @@ def _on_future_done(future):
     except Exception as exc:
         print(f"❌ [Supabase BG Task Thread Error] {exc}", flush=True)
 
+
 def save_chat_log_async(
     user_query: str,
-    assistant_response: Optional[str] = None,
-    unidad: Optional[int] = None,
-    sources: Optional[List[Dict[str, Any]]] = None,
+    assistant_response: str | None = None,
+    unidad: int | None = None,
+    sources: list[dict[str, Any]] | None = None,
     response_time_ms: int = 0,
     status: str = "success",
-    error_message: Optional[str] = None,
-    client_ip: Optional[str] = None,
-    log_id: Optional[str] = None
+    error_message: str | None = None,
+    client_ip: str | None = None,
+    log_id: str | None = None,
 ):
     """
     Lanza el guardado en Supabase de forma totalmente asíncrona / en segundo plano.
@@ -138,18 +170,20 @@ def save_chat_log_async(
         status,
         error_message,
         client_ip,
-        log_id
+        log_id,
     )
     future.add_done_callback(_on_future_done)
 
-def update_chat_rating_async(log_id: str, rating: int, comment: Optional[str] = None):
+
+def update_chat_rating_async(log_id: str, rating: int, comment: str | None = None):
     """
     Lanza la actualización de calificación (👍/👎) en segundo plano.
     """
     future = _EXECUTOR.submit(_update_chat_rating_sync, log_id, rating, comment)
     future.add_done_callback(_on_future_done)
 
-def fetch_chat_stats() -> Dict[str, Any]:
+
+def fetch_chat_stats() -> dict[str, Any]:
     """
     Obtiene estadísticas completas y analíticas docentes desde la tabla chat_logs en Supabase.
     """
@@ -158,29 +192,42 @@ def fetch_chat_stats() -> Dict[str, Any]:
         return {"configured": False, "message": "Supabase no está configurado."}
 
     endpoint = f"{url}/rest/v1/chat_logs?select=id,user_query,assistant_response,unidad,sources,response_time_ms,status,rating,feedback_comment,created_at&order=created_at.desc&limit=500"
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}"
-    }
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
 
     try:
         res = requests.get(endpoint, headers=headers, timeout=10)
         if res.status_code == 200:
             logs = res.json()
             total_chats = len(logs)
-            success_count = sum(1 for log in logs if log.get("status") in ("success", "success_cached"))
-            cached_count = sum(1 for log in logs if log.get("status") == "success_cached")
+            success_count = sum(
+                1 for log in logs if log.get("status") in ("success", "success_cached")
+            )
+            cached_count = sum(
+                1 for log in logs if log.get("status") == "success_cached"
+            )
             error_count = sum(1 for log in logs if log.get("status") == "error")
-            blocked_count = sum(1 for log in logs if log.get("status") == "blocked_guardrails")
-            
+            blocked_count = sum(
+                1 for log in logs if log.get("status") == "blocked_guardrails"
+            )
+
             positive_ratings = sum(1 for log in logs if log.get("rating") == 1)
             negative_ratings = sum(1 for log in logs if log.get("rating") == -1)
             total_rated = positive_ratings + negative_ratings
-            satisfaction_rate = round((positive_ratings / total_rated * 100), 1) if total_rated > 0 else 100.0
+            satisfaction_rate = (
+                round((positive_ratings / total_rated * 100), 1)
+                if total_rated > 0
+                else 100.0
+            )
 
-            cache_hit_ratio = round((cached_count / success_count * 100), 1) if success_count > 0 else 0.0
+            cache_hit_ratio = (
+                round((cached_count / success_count * 100), 1)
+                if success_count > 0
+                else 0.0
+            )
 
-            times = [log["response_time_ms"] for log in logs if log.get("response_time_ms")]
+            times = [
+                log["response_time_ms"] for log in logs if log.get("response_time_ms")
+            ]
             avg_time = sum(times) / len(times) if times else 0
 
             # Desglose de preguntas por Unidad Temática
@@ -197,18 +244,20 @@ def fetch_chat_stats() -> Dict[str, Any]:
                 if len(snippet) > 160:
                     snippet = snippet[:160] + "..."
 
-                recent_logs.append({
-                    "id": log.get("id"),
-                    "user_query": log.get("user_query"),
-                    "assistant_snippet": snippet,
-                    "unidad": log.get("unidad"),
-                    "sources_count": len(log.get("sources") or []),
-                    "response_time_ms": log.get("response_time_ms"),
-                    "status": log.get("status"),
-                    "rating": log.get("rating"),
-                    "feedback_comment": log.get("feedback_comment"),
-                    "created_at": log.get("created_at")
-                })
+                recent_logs.append(
+                    {
+                        "id": log.get("id"),
+                        "user_query": log.get("user_query"),
+                        "assistant_snippet": snippet,
+                        "unidad": log.get("unidad"),
+                        "sources_count": len(log.get("sources") or []),
+                        "response_time_ms": log.get("response_time_ms"),
+                        "status": log.get("status"),
+                        "rating": log.get("rating"),
+                        "feedback_comment": log.get("feedback_comment"),
+                        "created_at": log.get("created_at"),
+                    }
+                )
 
             return {
                 "configured": True,
@@ -223,7 +272,7 @@ def fetch_chat_stats() -> Dict[str, Any]:
                 "satisfaction_rate_percent": satisfaction_rate,
                 "avg_response_time_ms": round(avg_time, 2),
                 "unit_breakdown": unit_counts,
-                "recent_logs": recent_logs
+                "recent_logs": recent_logs,
             }
         else:
             return {"configured": True, "error": f"HTTP {res.status_code}: {res.text}"}

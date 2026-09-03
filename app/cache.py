@@ -5,16 +5,20 @@ Permite responder consultas repetidas o parafraseadas con 0 tokens de LLM y late
 """
 
 import time
-from typing import Dict, Any, Optional, List
+from typing import Any
+
 import numpy as np
+
 
 class SemanticCacheManager:
     def __init__(self, max_size: int = 150, similarity_threshold: float = 0.92):
         self.max_size = max_size
         self.similarity_threshold = similarity_threshold
-        self.entries: List[Dict[str, Any]] = []
+        self.entries: list[dict[str, Any]] = []
 
-    def search(self, query_vector: List[float], unidad: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def search(
+        self, query_vector: list[float], unidad: int | None = None
+    ) -> dict[str, Any] | None:
         """
         Busca si existe una consulta previa en caché con una similitud del coseno >= threshold.
         """
@@ -31,7 +35,11 @@ class SemanticCacheManager:
 
         for entry in self.entries:
             # Si se especifica unidad, comparar solo entradas de la misma unidad
-            if unidad is not None and entry.get("unidad") is not None and entry.get("unidad") != unidad:
+            if (
+                unidad is not None
+                and entry.get("unidad") is not None
+                and entry.get("unidad") != unidad
+            ):
                 continue
 
             c_vec = entry["query_vector"]
@@ -49,12 +57,19 @@ class SemanticCacheManager:
                 "score": round(best_score, 4),
                 "query_text": best_entry["query_text"],
                 "response": best_entry["response"],
-                "sources": best_entry["sources"]
+                "sources": best_entry["sources"],
             }
 
         return None
 
-    def add(self, query_text: str, query_vector: List[float], response: str, sources: List[Dict[str, Any]], unidad: Optional[int] = None):
+    def add(
+        self,
+        query_text: str,
+        query_vector: list[float],
+        response: str,
+        sources: list[dict[str, Any]],
+        unidad: int | None = None,
+    ):
         """
         Almacena una nueva respuesta exitosa en la caché semántica en memoria.
         """
@@ -65,13 +80,16 @@ class SemanticCacheManager:
         if len(self.entries) >= self.max_size:
             self.entries.pop(0)
 
-        self.entries.append({
-            "query_text": query_text,
-            "query_vector": np.array(query_vector, dtype=np.float32),
-            "response": response,
-            "sources": sources,
-            "unidad": unidad,
-            "timestamp": time.time()
-        })
+        self.entries.append(
+            {
+                "query_text": query_text,
+                "query_vector": np.array(query_vector, dtype=np.float32),
+                "response": response,
+                "sources": sources,
+                "unidad": unidad,
+                "timestamp": time.time(),
+            }
+        )
+
 
 semantic_cache = SemanticCacheManager()

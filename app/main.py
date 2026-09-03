@@ -3,34 +3,41 @@ app/main.py
 Servidor FastAPI para RAG, Chat Asistente e Exámenes del Curso Cloud Computing
 """
 
-import os
-import json
-import time
 import hashlib
+import json
+import os
+import time
 import uuid
-from typing import List, Optional
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import requests
 
-from app.rag import vector_store, get_query_embedding, create_snippet
+from app.cache import semantic_cache
+from app.db import (
+    fetch_chat_stats,
+    is_supabase_configured,
+    save_chat_log_async,
+    update_chat_rating_async,
+)
 from app.generation import generate_chat_stream
 from app.guardrails import validate_chat_query
-from app.db import save_chat_log_async, update_chat_rating_async, fetch_chat_stats, is_supabase_configured
-from app.cache import semantic_cache
+from app.rag import create_snippet, get_query_embedding, vector_store
 
 app = FastAPI(
     title="Cloud Computing Course Backend API",
     description="Backend RAG FastAPI para búsqueda semántica, asistente IA y generación de exámenes.",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # ─────────────────────────────────────────────────────────────
 # 1. CONFIGURACIÓN DE CORS MULTI-ORIGEN
 # ─────────────────────────────────────────────────────────────
-raw_origins = os.getenv("ALLOWED_ORIGINS", "https://cloud-computing-beta-plum.vercel.app,http://localhost:3000,http://localhost:5173")
+raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://cloud-computing-beta-plum.vercel.app,http://localhost:3000,http://localhost:5173",
+)
 allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
@@ -44,7 +51,8 @@ app.add_middleware(
 # ─────────────────────────────────────────────────────────────
 # 2. RATE LIMITING BÁSICO POR IP (20 requests / minuto por IP)
 # ─────────────────────────────────────────────────────────────
-RATE_LIMIT_STORE = {} # {ip: [timestamps]}
+RATE_LIMIT_STORE = {}  # {ip: [timestamps]}
+
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
@@ -54,14 +62,14 @@ async def rate_limit_middleware(request: Request, call_next):
 
     client_ip = request.client.host if request.client else "unknown"
     now = time.time()
-    window = 60 # 60 segundos
-    max_requests = 30 # máximo 30 peticiones por minuto por IP
+    window = 60  # 60 segundos
+    max_requests = 30  # máximo 30 peticiones por minuto por IP
 
     timestamps = [t for t in RATE_LIMIT_STORE.get(client_ip, []) if now - t < window]
     if len(timestamps) >= max_requests:
         raise HTTPException(
             status_code=429,
-            detail="Demasiadas peticiones. Por favor espera un minuto antes de reintentar."
+            detail="Demasiadas peticiones. Por favor espera un minuto antes de reintentar.",
         )
 
     timestamps.append(now)
@@ -69,75 +77,91 @@ async def rate_limit_middleware(request: Request, call_next):
     response = await call_next(request)
     return response
 
+
 # ─────────────────────────────────────────────────────────────
 # CACHÉ EN RAM PARA BUSQUEDAS
 # ─────────────────────────────────────────────────────────────
 SEARCH_CACHE = {}
 
+
 @app.on_event("startup")
 def startup_event():
     groq_key = os.getenv("GROQ_API_KEY")
-    
+
     if not groq_key:
-        print("⚠ WARNING: GROQ_API_KEY no está configurada. El endpoint /chat no podrá generar respuestas con Groq.")
+        print(
+            "⚠ WARNING: GROQ_API_KEY no está configurada. El endpoint /chat no podrá generar respuestas con Groq."
+        )
     else:
         print("✔ GROQ_API_KEY configurada exitosamente.")
 
     if is_supabase_configured():
-        print("✔ Supabase configurado para persistencia y estadísticas en segundo plano.")
+        print(
+            "✔ Supabase configurado para persistencia y estadísticas en segundo plano."
+        )
     else:
-        print("ℹ Supabase no configurado (SUPABASE_URL y SUPABASE_KEY no definidas). Los chats no se guardarán en DB.")
+        print(
+            "ℹ Supabase no configurado (SUPABASE_URL y SUPABASE_KEY no definidas). Los chats no se guardarán en DB."
+        )
 
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     embeddings_file = os.path.join(BASE_DIR, "data", "knowledge-embeddings.json")
     vector_store.load_embeddings(embeddings_file)
+
 
 # ─────────────────────────────────────────────────────────────
 # SCHEMAS (PYDANTIC)
 # ─────────────────────────────────────────────────────────────
 class SearchRequest(BaseModel):
     query: str
-    k: Optional[int] = 5
-    unidad: Optional[int] = None
-    labNumber: Optional[int] = None
+    k: int | None = 5
+    unidad: int | None = None
+    labNumber: int | None = None
+
 
 class SearchResultItem(BaseModel):
     id: str
     title: str
-    unidad: Optional[int] = None
-    labNumber: Optional[int] = None
+    unidad: int | None = None
+    labNumber: int | None = None
     slug: str
     snippet: str
     url: str
     score: float
 
+
 class SearchResponse(BaseModel):
-    results: List[SearchResultItem]
+    results: list[SearchResultItem]
+
 
 class ChatMessage(BaseModel):
-    role: str # "user" | "assistant"
+    role: str  # "user" | "assistant"
     content: str
+
 
 class ChatRequest(BaseModel):
     query: str
-    history: Optional[List[ChatMessage]] = []
-    unidad: Optional[int] = None
-    access_key: Optional[str] = None
+    history: list[ChatMessage] | None = []
+    unidad: int | None = None
+    access_key: str | None = None
+
 
 class FeedbackRequest(BaseModel):
     log_id: str
-    rating: int # 1 para positivo (👍), -1 para negativo (👎)
-    comment: Optional[str] = None
-    access_key: Optional[str] = None
+    rating: int  # 1 para positivo (👍), -1 para negativo (👎)
+    comment: str | None = None
+    access_key: str | None = None
+
 
 class ExamRequest(BaseModel):
-    unidad: Optional[int] = None
-    labNumber: Optional[int] = None
-    tipo: Optional[str] = "all" # "quiz" | "scenario" | "matching" | "classify" | "all"
-    cantidad: Optional[int] = 5
-    access_key: Optional[str] = None
+    unidad: int | None = None
+    labNumber: int | None = None
+    tipo: str | None = "all"  # "quiz" | "scenario" | "matching" | "classify" | "all"
+    cantidad: int | None = 5
+    access_key: str | None = None
 
-def verify_access_key(request: Request, body_key: Optional[str] = None):
+
+def verify_access_key(request: Request, body_key: str | None = None):
     """
     Verifica la clave de acceso leída de las variables de entorno (CHAT_ACCESS_KEY).
     Es OBLIGATORIA: Si no hay clave enviada o si no coincide con la configurada en Render, bloquea con 401.
@@ -146,7 +170,7 @@ def verify_access_key(request: Request, body_key: Optional[str] = None):
     if not expected_key:
         raise HTTPException(
             status_code=500,
-            detail="Error de configuración: CHAT_ACCESS_KEY no está configurada en el servidor."
+            detail="Error de configuración: CHAT_ACCESS_KEY no está configurada en el servidor.",
         )
 
     header_key = request.headers.get("X-Access-Key")
@@ -155,12 +179,14 @@ def verify_access_key(request: Request, body_key: Optional[str] = None):
     if not provided_key or provided_key.strip() != expected_key.strip():
         raise HTTPException(
             status_code=401,
-            detail="Clave de acceso requerida o incorrecta. Ingrese la clave válida del curso."
+            detail="Clave de acceso requerida o incorrecta. Ingrese la clave válida del curso.",
         )
+
 
 # ─────────────────────────────────────────────────────────────
 # ENDPOINTS
 # ─────────────────────────────────────────────────────────────
+
 
 @app.get("/")
 @app.get("/health")
@@ -170,40 +196,48 @@ def health_check():
         "status": "ok",
         "service": "Cloud Computing RAG & Exam API",
         "vector_chunks": len(vector_store.chunks),
-        "timestamp": time.time()
+        "timestamp": time.time(),
     }
+
 
 @app.post("/search", response_model=SearchResponse)
 def search_knowledge(req: SearchRequest):
     """Endpoint /search: Recibe consulta, aplica Guardrails y devuelve Top-K con snippet."""
     clean_query = validate_chat_query(req.query)
 
-    cache_key = hashlib.md5(f"{clean_query.lower()}_{req.k}_{req.unidad}_{req.labNumber}".encode()).hexdigest()
+    cache_key = hashlib.md5(
+        f"{clean_query.lower()}_{req.k}_{req.unidad}_{req.labNumber}".encode()
+    ).hexdigest()
     if cache_key in SEARCH_CACHE:
         return SEARCH_CACHE[cache_key]
 
     try:
         q_vec = get_query_embedding(clean_query)
-        raw_results = vector_store.search(q_vec, k=req.k, unidad=req.unidad, lab_number=req.labNumber)
-        
+        raw_results = vector_store.search(
+            q_vec, k=req.k, unidad=req.unidad, lab_number=req.labNumber
+        )
+
         formatted_results = []
         for item in raw_results:
-            formatted_results.append(SearchResultItem(
-                id=item["id"],
-                title=item["title"],
-                unidad=item.get("unidad"),
-                labNumber=item.get("labNumber"),
-                slug=item["slug"],
-                snippet=create_snippet(item["text"], clean_query),
-                url=item["url"],
-                score=item["score"]
-            ))
+            formatted_results.append(
+                SearchResultItem(
+                    id=item["id"],
+                    title=item["title"],
+                    unidad=item.get("unidad"),
+                    labNumber=item.get("labNumber"),
+                    slug=item["slug"],
+                    snippet=create_snippet(item["text"], clean_query),
+                    url=item["url"],
+                    score=item["score"],
+                )
+            )
 
         response = SearchResponse(results=formatted_results)
         SEARCH_CACHE[cache_key] = response
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/chat")
 def chat_assistant(req: ChatRequest, raw_request: Request):
@@ -225,7 +259,10 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
     cached_hit = semantic_cache.search(q_vec, unidad=req.unidad)
     if cached_hit:
         elapsed_ms = int((time.time() - start_time) * 1000)
-        print(f"⚡ [Semantic Cache HIT] (Similitud: {cached_hit['score']*100:.1f}%) para: '{clean_query[:30]}...'", flush=True)
+        print(
+            f"⚡ [Semantic Cache HIT] (Similitud: {cached_hit['score'] * 100:.1f}%) para: '{clean_query[:30]}...'",
+            flush=True,
+        )
 
         cached_sources = cached_hit["sources"]
         cached_response = cached_hit["response"]
@@ -243,16 +280,22 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 response_time_ms=elapsed_ms,
                 status="success_cached",
                 client_ip=client_ip,
-                log_id=chat_log_id
+                log_id=chat_log_id,
             )
 
-        return StreamingResponse(generate_cached_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            generate_cached_stream(), media_type="text/event-stream"
+        )
 
     # 4. CACHE MISS: Recuperar contexto relevante mediante RAG y consultar LLM
     top_chunks = vector_store.search(q_vec, k=3, unidad=req.unidad)
-    
-    context_str = "\n\n".join([f"--- CHUNK [{c['title']}] ---\n{c['text']}" for c in top_chunks])
-    sources = [{"title": c["title"], "url": c["url"], "slug": c["slug"]} for c in top_chunks]
+
+    context_str = "\n\n".join(
+        [f"--- CHUNK [{c['title']}] ---\n{c['text']}" for c in top_chunks]
+    )
+    sources = [
+        {"title": c["title"], "url": c["url"], "slug": c["slug"]} for c in top_chunks
+    ]
 
     system_prompt = (
         "Eres el Asistente Tutor IA oficial del curso de Cloud Computing y Google Cloud Platform (GCP).\n"
@@ -265,7 +308,9 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
         f"CONTEXTO DEL CURSO:\n{context_str}\n"
     )
 
-    messages = [{"role": msg.role, "content": msg.content} for msg in (req.history or [])]
+    messages = [
+        {"role": msg.role, "content": msg.content} for msg in (req.history or [])
+    ]
     messages.append({"role": "user", "content": req.query})
 
     def generate_stream():
@@ -279,7 +324,10 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
 
             elapsed_ms = int((time.time() - start_time) * 1000)
             full_response = "".join(full_response_parts)
-            print(f"📩 [Chat Stream Terminado] Lanzando guardado en Supabase (Latencia: {elapsed_ms}ms)...", flush=True)
+            print(
+                f"📩 [Chat Stream Terminado] Lanzando guardado en Supabase (Latencia: {elapsed_ms}ms)...",
+                flush=True,
+            )
 
             # Almacenar en Caché Semántico para futuras preguntas
             semantic_cache.add(
@@ -287,7 +335,7 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 query_vector=q_vec,
                 response=full_response,
                 sources=sources,
-                unidad=req.unidad
+                unidad=req.unidad,
             )
 
             # Guardar registro en Supabase en segundo plano
@@ -299,13 +347,18 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 response_time_ms=elapsed_ms,
                 status="success",
                 client_ip=client_ip,
-                log_id=chat_log_id
+                log_id=chat_log_id,
             )
 
         except Exception as err:
             elapsed_ms = int((time.time() - start_time) * 1000)
-            partial_response = "".join(full_response_parts) if full_response_parts else None
-            print(f"⚠ [Chat Stream Error] Error en respuesta: {err}. Lanzando guardado de error...", flush=True)
+            partial_response = (
+                "".join(full_response_parts) if full_response_parts else None
+            )
+            print(
+                f"⚠ [Chat Stream Error] Error en respuesta: {err}. Lanzando guardado de error...",
+                flush=True,
+            )
             save_chat_log_async(
                 user_query=req.query,
                 assistant_response=partial_response,
@@ -315,26 +368,35 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 status="error",
                 error_message=str(err),
                 client_ip=client_ip,
-                log_id=chat_log_id
+                log_id=chat_log_id,
             )
             yield f"data: {json.dumps({'error': str(err)})}\n\n"
 
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
+
 
 @app.post("/chat/feedback")
 def post_chat_feedback(req: FeedbackRequest, raw_request: Request):
     """Endpoint /chat/feedback: Permite al alumno calificar una respuesta (1 para 👍, -1 para 👎)."""
     verify_access_key(raw_request, req.access_key)
     if req.rating not in (1, -1):
-        raise HTTPException(status_code=400, detail="El rating debe ser 1 (positivo) o -1 (negativo).")
+        raise HTTPException(
+            status_code=400, detail="El rating debe ser 1 (positivo) o -1 (negativo)."
+        )
     update_chat_rating_async(log_id=req.log_id, rating=req.rating, comment=req.comment)
-    return {"status": "ok", "message": "Feedback registrado exitosamente.", "log_id": req.log_id}
+    return {
+        "status": "ok",
+        "message": "Feedback registrado exitosamente.",
+        "log_id": req.log_id,
+    }
+
 
 @app.get("/chat/stats")
-def get_chat_stats(raw_request: Request, access_key: Optional[str] = None):
+def get_chat_stats(raw_request: Request, access_key: str | None = None):
     """Endpoint /chat/stats: Devuelve estadísticas agregadas de la tabla chat_logs en Supabase."""
     verify_access_key(raw_request, access_key)
     return fetch_chat_stats()
+
 
 @app.post("/exam")
 def generate_exam(req: ExamRequest, raw_request: Request):
@@ -352,20 +414,23 @@ def generate_exam(req: ExamRequest, raw_request: Request):
         try:
             with open(style_file, "r", encoding="utf-8") as f:
                 all_examples = json.load(f)
-                
+
                 examples = [
-                    ex for ex in all_examples
+                    ex
+                    for ex in all_examples
                     if (req.unidad is None or ex.get("unidad") == req.unidad)
                     and (req.labNumber is None or ex.get("labNumber") == req.labNumber)
                     and (req.tipo == "all" or ex.get("tipo") == req.tipo)
-                ][:req.cantidad]
+                ][: req.cantidad]
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error parseando style-examples.json: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error parseando style-examples.json: {e!s}"
+            )
 
     return {
         "unidad": req.unidad,
         "labNumber": req.labNumber,
         "tipo": req.tipo,
         "total_examples": len(examples),
-        "questions": [ex["data"] for ex in examples]
+        "questions": [ex["data"] for ex in examples],
     }

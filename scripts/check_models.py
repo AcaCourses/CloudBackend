@@ -9,7 +9,9 @@ Uso:
 """
 
 import os
+
 import requests
+
 
 def check_gemini():
     api_key = os.getenv("GEMINI_API_KEY")
@@ -24,7 +26,9 @@ def check_gemini():
         return
 
     available = {m["name"].replace("models/", "") for m in res.json().get("models", [])}
-    raw_models = os.getenv("GEMINI_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash")
+    raw_models = os.getenv(
+        "GEMINI_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash"
+    )
     configured = [m.strip() for m in raw_models.split(",") if m.strip()]
 
     print("🔎 Verificando modelos de Gemini...")
@@ -33,6 +37,7 @@ def check_gemini():
             print(f"   ✔ {model}: ACTIVO Y DISPONIBLE")
         else:
             print(f"   ❌ {model}: NO ENCONTRADO O DEPRECADO en Gemini!")
+
 
 def check_groq():
     api_key = os.getenv("GROQ_API_KEY")
@@ -58,6 +63,7 @@ def check_groq():
         else:
             print(f"   ❌ {model}: NO ENCONTRADO O DEPRECADO en Groq!")
 
+
 def main():
     print("==================================================")
     print("   CHEQUEO DE DISPONIBILIDAD DE MODELOS LLM")
@@ -66,6 +72,7 @@ def main():
     print()
     check_groq()
     print("==================================================")
+
 
 if __name__ == "__main__":
     main()
