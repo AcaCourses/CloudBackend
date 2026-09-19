@@ -58,6 +58,7 @@ class SemanticCacheManager:
                 "query_text": best_entry["query_text"],
                 "response": best_entry["response"],
                 "sources": best_entry["sources"],
+                "unidad": best_entry.get("unidad"),
             }
 
         return None

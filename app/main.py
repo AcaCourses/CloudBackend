@@ -266,6 +266,7 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
 
         cached_sources = cached_hit["sources"]
         cached_response = cached_hit["response"]
+        inferred_unidad = req.unidad if req.unidad is not None else cached_hit.get("unidad")
 
         def generate_cached_stream():
             # Emitir respuesta almacenada instantáneamente por SSE
@@ -275,7 +276,7 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
             save_chat_log_async(
                 user_query=req.query,
                 assistant_response=cached_response,
-                unidad=req.unidad,
+                unidad=inferred_unidad,
                 sources=cached_sources,
                 response_time_ms=elapsed_ms,
                 status="success_cached",
@@ -289,6 +290,10 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
 
     # 4. CACHE MISS: Recuperar contexto relevante mediante RAG y consultar LLM
     top_chunks = vector_store.search(q_vec, k=3, unidad=req.unidad)
+    
+    inferred_unidad = req.unidad
+    if inferred_unidad is None and top_chunks and top_chunks[0].get("unidad") is not None:
+        inferred_unidad = top_chunks[0]["unidad"]
 
     context_str = "\n\n".join(
         [f"--- CHUNK [{c['title']}] ---\n{c['text']}" for c in top_chunks]
@@ -335,14 +340,14 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
                 query_vector=q_vec,
                 response=full_response,
                 sources=sources,
-                unidad=req.unidad,
+                unidad=inferred_unidad,
             )
 
             # Guardar registro en Supabase en segundo plano
             save_chat_log_async(
                 user_query=req.query,
                 assistant_response=full_response,
-                unidad=req.unidad,
+                unidad=inferred_unidad,
                 sources=sources,
                 response_time_ms=elapsed_ms,
                 status="success",
@@ -362,7 +367,7 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
             save_chat_log_async(
                 user_query=req.query,
                 assistant_response=partial_response,
-                unidad=req.unidad,
+                unidad=inferred_unidad,
                 sources=sources,
                 response_time_ms=elapsed_ms,
                 status="error",
