@@ -153,7 +153,7 @@ def generate_chat_stream(
 
     # 1. INTENTO PRINCIPAL: GEMINI
     if gemini_key:
-        gemini_model = "gemini-2.5-flash"
+        gemini_model = "gemini-3.6-flash"
         try:
             print(f"🤖 [LLM Gemini] Intentando generación con modelo: {gemini_model}...", flush=True)
             for text_chunk in call_gemini_stream(gemini_model, system_prompt, messages, gemini_key):
