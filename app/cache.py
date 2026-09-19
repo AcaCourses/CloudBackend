@@ -11,7 +11,7 @@ import numpy as np
 
 
 class SemanticCacheManager:
-    def __init__(self, max_size: int = 150, similarity_threshold: float = 0.92):
+    def __init__(self, max_size: int = 150, similarity_threshold: float = 0.85):
         self.max_size = max_size
         self.similarity_threshold = similarity_threshold
         self.entries: list[dict[str, Any]] = []
