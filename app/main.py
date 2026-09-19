@@ -289,7 +289,7 @@ def chat_assistant(req: ChatRequest, raw_request: Request):
         )
 
     # 4. CACHE MISS: Recuperar contexto relevante mediante RAG y consultar LLM
-    top_chunks = vector_store.search(q_vec, k=3, unidad=req.unidad)
+    top_chunks = vector_store.search(q_vec, k=2, unidad=req.unidad)
     
     inferred_unidad = req.unidad
     if inferred_unidad is None and top_chunks and top_chunks[0].get("unidad") is not None:

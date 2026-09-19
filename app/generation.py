@@ -45,7 +45,7 @@ def call_groq_stream(
         "model": model,
         "messages": groq_messages,
         "temperature": 0.5,
-        "max_completion_tokens": 3000,
+        "max_completion_tokens": 1200,
         "stream": True,
     }
 
