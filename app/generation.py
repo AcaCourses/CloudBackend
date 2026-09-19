@@ -26,7 +26,7 @@ class RateLimitError(Exception):
 # Cargar lista de modelos candidatos de Groq desde variables de entorno
 def get_groq_models() -> list[str]:
     raw = os.getenv(
-        "GROQ_MODELS", "openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.6-27b"
+        "GROQ_MODELS", "llama3-8b-8192,llama-3.1-8b-instant,mixtral-8x7b-32768"
     )
     return [m.strip() for m in raw.split(",") if m.strip()]
 
@@ -84,46 +84,98 @@ def call_groq_stream(
 
 
 # ─────────────────────────────────────────────────────────────
+# GEMINI PROVIDER (HTTP Streaming SSE)
+# ─────────────────────────────────────────────────────────────
+def call_gemini_stream(
+    model: str, system_prompt: str, messages: list[dict[str, str]], api_key: str
+) -> Generator[str, None, None]:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    
+    # Convertir formato de mensajes de OpenAI a Gemini
+    gemini_messages = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        gemini_messages.append({"role": role, "parts": [{"text": msg["content"]}]})
+        
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": system_prompt}]
+        },
+        "contents": gemini_messages,
+        "generationConfig": {
+            "temperature": 0.5,
+            "maxOutputTokens": 3000,
+        }
+    }
+    
+    res = requests.post(url, headers=headers, json=payload, stream=True, timeout=20)
+    
+    if res.status_code == 429:
+        raise RateLimitError(f"Modelo de Gemini {model} saturado por Rate Limit (429)")
+    if res.status_code != 200:
+        raise ModelUnavailableError(f"Error en Gemini API ({res.status_code}): {res.text}")
+        
+    for line in res.iter_lines():
+        if line:
+            decoded = line.decode("utf-8").strip()
+            if decoded.startswith("data: "):
+                data_str = decoded[6:]
+                try:
+                    data_json = json.loads(data_str)
+                    candidates = data_json.get("candidates", [])
+                    if candidates:
+                        content = candidates[0].get("content", {})
+                        parts = content.get("parts", [])
+                        for part in parts:
+                            text = part.get("text", "")
+                            if text:
+                                yield text
+                except json.JSONDecodeError:
+                    pass
+
+
+# ─────────────────────────────────────────────────────────────
 # FUNCIONALIDAD PRINCIPAL CON CADENA DE FALLBACK EN GROQ
 # ─────────────────────────────────────────────────────────────
 def generate_chat_stream(
     system_prompt: str, messages: list[dict[str, str]]
 ) -> Generator[str, None, None]:
     """
-    Intenta en orden cada modelo de Groq (openai/gpt-oss-120b -> openai/gpt-oss-20b -> qwen/qwen3.6-27b).
-    Si uno falla (413, 429, 400), salta inmediatamente al siguiente modelo.
+    Intenta primero con Gemini 2.5 Flash.
+    Si falla, cae en cadena de fallback hacia los modelos de Groq.
     """
+    gemini_key = os.getenv("GEMINI_API_KEY")
     groq_key = os.getenv("GROQ_API_KEY")
 
-    if not groq_key:
-        raise RuntimeError(
-            "GROQ_API_KEY no está configurada en las variables de entorno."
-        )
+    if not gemini_key and not groq_key:
+        raise RuntimeError("No hay claves de API configuradas (ni Gemini ni Groq).")
 
-    models = get_groq_models()
-
-    for model in models:
+    # 1. INTENTO PRINCIPAL: GEMINI
+    if gemini_key:
+        gemini_model = "gemini-2.5-flash"
         try:
-            print(
-                f"🤖 [LLM Groq] Intentando generación con modelo: {model}...",
-                flush=True,
-            )
-            for text_chunk in call_groq_stream(
-                model, system_prompt, messages, groq_key
-            ):
+            print(f"🤖 [LLM Gemini] Intentando generación con modelo: {gemini_model}...", flush=True)
+            for text_chunk in call_gemini_stream(gemini_model, system_prompt, messages, gemini_key):
                 yield text_chunk
             return
         except (ModelUnavailableError, RateLimitError) as err:
-            print(
-                f"⚠ [LLM Groq Fallback] Modelo {model} falló: {err}. Probando siguiente candidato...",
-                flush=True,
-            )
+            print(f"⚠ [LLM Gemini Fallback] Modelo {gemini_model} falló: {err}. Probando Groq...", flush=True)
         except Exception as err:
-            print(
-                f"⚠ [LLM Groq Fallback] Error inesperado en modelo {model}: {err}. Probando siguiente...",
-                flush=True,
-            )
+            print(f"⚠ [LLM Gemini Fallback] Error inesperado en {gemini_model}: {err}. Probando Groq...", flush=True)
 
-    raise RuntimeError(
-        "Ningún modelo de Groq estuvo disponible en este momento. Revisa GROQ_API_KEY o las cuotas."
-    )
+    # 2. FALLBACK: GROQ
+    if groq_key:
+        models = get_groq_models()
+        for model in models:
+            try:
+                print(f"🤖 [LLM Groq] Intentando generación con modelo: {model}...", flush=True)
+                for text_chunk in call_groq_stream(model, system_prompt, messages, groq_key):
+                    yield text_chunk
+                return
+            except (ModelUnavailableError, RateLimitError) as err:
+                print(f"⚠ [LLM Groq Fallback] Modelo {model} falló: {err}. Probando siguiente candidato...", flush=True)
+            except Exception as err:
+                print(f"⚠ [LLM Groq Fallback] Error inesperado en modelo {model}: {err}. Probando siguiente...", flush=True)
+
+    raise RuntimeError("Ningún modelo de Gemini ni de Groq estuvo disponible en este momento. Revisa tus API keys o cuotas.")
